@@ -1,0 +1,162 @@
+# ==========================================================
+# MOVIE RECOMMENDATION SYSTEM (CONTENT-BASED FILTERING)
+# By Adi Setiawan
+# ==========================================================
+
+# ----------------------------------------------------------
+# 1. Import library dasar
+# ----------------------------------------------------------
+import pandas as pd    # untuk mengolah dataset
+import ast             # untuk parsing string JSON → object Python (list/dict)
+
+# ----------------------------------------------------------
+# 2. Load dataset
+# ----------------------------------------------------------
+movies = pd.read_csv("data/tmdb_5000_movies.csv")   # data film (overview, genre, dll.)
+credits = pd.read_csv("data/tmdb_5000_credits.csv") # data pemeran & kru
+
+# Gabungkan dataset berdasarkan judul film
+movies = movies.merge(credits, on="title")
+
+# Ambil kolom penting saja
+movies = movies[["movie_id", "title", "overview", "genres", "keywords", "cast", "crew"]]
+
+# ----------------------------------------------------------
+# 3. Function untuk preprocessing kolom JSON
+# ----------------------------------------------------------
+
+# Ubah JSON string → list nama (genre / keyword)
+def convert(text):
+    try:
+        return [i["name"] for i in ast.literal_eval(text)]
+    except:
+        return []   # kalau NaN / error parsing → list kosong
+
+movies["genres"] = movies["genres"].apply(convert)
+movies["keywords"] = movies["keywords"].apply(convert)
+
+# Ambil maksimal 3 aktor utama
+def convert_cast(text):
+    try:
+        cast_list = []
+        counter = 0
+        for i in ast.literal_eval(text):
+            if counter < 3:
+                cast_list.append(i["name"])
+            counter += 1
+        return cast_list
+    except:
+        return []
+
+movies["cast"] = movies["cast"].apply(convert_cast)
+
+# Ambil nama sutradara
+def fetch_director(text):
+    try:
+        for i in ast.literal_eval(text):
+            if i["job"] == "Director":
+                return [i["name"]]
+        return []
+    except:
+        return []
+
+movies["crew"] = movies["crew"].apply(fetch_director)
+
+# ----------------------------------------------------------
+# 4. Preprocessing teks (overview → token list)
+# ----------------------------------------------------------
+
+# Ganti NaN di overview dengan string kosong
+movies["overview"] = movies["overview"].fillna("")
+
+# Pecah overview jadi list kata
+movies["overview"] = movies["overview"].apply(lambda x: x.split() if isinstance(x, str) else [])
+
+# Hilangkan spasi pada nama orang/genre (contoh: "Sam Worthington" → "SamWorthington")
+def remove_space(word_list):
+    return [i.replace(" ", "") for i in word_list]
+
+movies["cast"] = movies["cast"].apply(remove_space)
+movies["crew"] = movies["crew"].apply(remove_space)
+movies["genres"] = movies["genres"].apply(remove_space)
+movies["keywords"] = movies["keywords"].apply(remove_space)
+
+# ----------------------------------------------------------
+# 5. Buat kolom "tags" gabungan semua fitur
+# ----------------------------------------------------------
+movies["tags"] = (
+    movies["overview"]
+    + movies["genres"]
+    + movies["keywords"]
+    + movies["cast"]
+    + movies["crew"]
+)
+
+# Ambil hanya kolom final
+df_baru = movies[["movie_id", "title", "tags"]]
+
+# Ubah list kata menjadi string teks
+df_baru["tags"] = df_baru["tags"].apply(lambda x: " ".join(x))
+
+# Ubah semua ke lowercase
+df_baru["tags"] = df_baru["tags"].apply(lambda x: x.lower())
+
+# ----------------------------------------------------------
+# 6. Stemming untuk normalisasi kata
+# ----------------------------------------------------------
+import nltk
+from nltk.stem import PorterStemmer
+
+ps = PorterStemmer()
+
+def stems(text):
+    return " ".join([ps.stem(i) for i in text.split()])
+
+df_baru["tags"] = df_baru["tags"].apply(stems)
+
+# ----------------------------------------------------------
+# 7. Vectorization dengan CountVectorizer
+# ----------------------------------------------------------
+from sklearn.feature_extraction.text import CountVectorizer
+
+cv = CountVectorizer(max_features=5000, stop_words="english")
+vector = cv.fit_transform(df_baru["tags"]).toarray()
+
+# ----------------------------------------------------------
+# 8. Hitung Cosine Similarity antar film
+# ----------------------------------------------------------
+from sklearn.metrics.pairwise import cosine_similarity
+
+similarity = cosine_similarity(vector)
+
+# ----------------------------------------------------------
+# 9. Fungsi rekomendasi
+# ----------------------------------------------------------
+def recommend(movie):
+    # Ambil index film berdasarkan judul
+    index = df_baru[df_baru["title"] == movie].index[0]
+
+    # Hitung jarak kemiripan dengan semua film
+    distances = sorted(
+        list(enumerate(similarity[index])),
+        reverse=True,
+        key=lambda x: x[1]
+    )
+
+    # Cetak 5 rekomendasi teratas
+    for i in distances[1:6]:
+        print(df_baru.iloc[i[0]].title)
+
+# Contoh uji coba
+recommend("Spider-Man")
+
+# ----------------------------------------------------------
+# 10. Simpan hasil model & data dengan joblib
+# ----------------------------------------------------------
+import joblib
+
+# Simpan dataframe hasil preprocessing
+joblib.dump(df_baru, "model/movie_list.joblib")
+
+# Simpan matrix similarity
+joblib.dump(similarity, "model/similarity.joblib")
